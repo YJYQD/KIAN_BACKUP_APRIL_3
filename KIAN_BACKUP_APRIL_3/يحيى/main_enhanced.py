@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 import logging
 import traceback # تيقن من إضافة هذا السطر لجلب تفاصيل الخطأ
+import asyncio
+
 
 # إعداد اللوجنج بشكل احترافي لمراقبة كل الحركات
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+logging.getLogger("telethon").setLevel(logging.WARNING)
 from cryptography.fernet import Fernet
 
 import subprocess
@@ -16,7 +19,6 @@ import sys
 import threading
 import time
 import os
-import asyncio
 from handlers.buy_handler import handle_otp_input, confirm_login, confirm_buy, request_code, cancel_buy
 from handlers.numbers_handler import handle_numbers
 from telethon import TelegramClient, functions, Button, events
@@ -38,16 +40,16 @@ except (ValueError, TypeError):
 from kvsqlite.sync import Client as uu
 
 # 🧠 قاعدة البيانات
-db_main = uu('database/main.ss', 'bot')
+db_main = uu('database/main.ss', 'client')
 db = db_main
-import sqlite3
-sqlite3.connect("database/main.ss", timeout=30)
+
+
 
 db_sections = {
-    "normal": uu('database/normal.ss', 'bot'),
-    "fake": uu('database/fake.ss', 'bot'),
-    "fraud": uu('database/fraud.ss', 'bot'),
-    "old_creation": uu('database/old_creation.ss', 'bot'),
+    "normal": uu('database/normal.ss', 'client'),
+    "fake": uu('database/fake.ss', 'client'),
+    "fraud": uu('database/fraud.ss', 'client'),
+    "old_creation": uu('database/old_creation.ss', 'client'),
 }
 def get_section_db(section):
     return db_sections.get(section, db_main)
@@ -87,7 +89,18 @@ try:
 except Exception:
     pass
 
-# 📁 تأكد من وجود مجلد الداتا
+
+def get_lock(name):
+    if name not in ACCOUNT_TYPE_LOCKS:
+        ACCOUNT_TYPE_LOCKS[name] = asyncio.Lock()
+    return ACCOUNT_TYPE_LOCKS[name]
+
+ACCOUNT_TYPE_LOCKS = {
+    "fake": asyncio.Lock(),
+    "fraud": asyncio.Lock(),
+    "old_creation": asyncio.Lock(),
+}
+
 # 📁 تأكد من وجود مجلد الداتا
 os.makedirs('database/sessions', exist_ok=True)
 
@@ -175,23 +188,23 @@ import secrets
 
 def generate_password():
     return secrets.token_hex(8)
-token = os.getenv("MAIN_BOT_TOKEN")
+token = os.getenv("MAIN_client_TOKEN")
 
 
 if not token or not API_ID or not API_HASH:
-    print("❌ خطأ: تأكد من إضافة API_ID و API_HASH و MAIN_BOT_TOKEN في ملف .env")
+    print("❌ خطأ: تأكد من إضافة API_ID و API_HASH و MAIN_client_TOKEN في ملف .env")
     sys.exit(1)
 
 # تيقن من تعريف الكائن واستخدامه بصفة أساسية
 # تيقن من تعريف الكائن أولاً بصفة مستقلة
 # تيقن من تعريف الكائن بصفة مستقلة
-client = TelegramClient('BotSession', api_id=int(API_ID), api_hash=API_HASH)
-bot = client
+client = TelegramClient('clientSession', api_id=int(API_ID), api_hash=API_HASH)
+
 
 
 
 cipher = Fernet(ENC_KEY.encode())
-async def run_bot_system():
+async def run_client_system():
     """الدالة الأساسية لتشغيل البوت بصفة مستقرة"""
     max_retries = 3
     for retry in range(max_retries):
@@ -199,17 +212,13 @@ async def run_bot_system():
             print(f"🔄 جاري الاتصال بـ Telegram (محاولة {retry + 1}/{max_retries})...")
 
             # ✅ يجب استخدام await هنا لأننا داخل دالة async
-            if not await client.is_connected():
-                await client.connect()
+            await client.start()
+            print("✅ تم الاتصال بنجاح!")
 
-            print("✅ تم الاتصال بنجاح رسميًا!")
-            print("🚀 تحقق من بدء تشغيل بوت كيان الآن...")
-
-            # ✅ يجب استخدام await هنا أيضاً لكي يبقى البوت يعمل ولا ينتهي البرنامج
             await client.run_until_disconnected()
-            break
+
         except Exception as err_obj:
-            logger.exception(f"Runtime error: {err_obj}")
+            logger.exception(f"Client error: {err_obj}")
             if "database is locked" in str(err_obj).lower():
                 print(f"⚠️ قاعدة البيانات مغلقة بصفة مؤقتة، سأحاول مجددًا...")
                 await asyncio.sleep(5)
@@ -250,11 +259,7 @@ ACCOUNT_TYPE_META = {
     }
 }
 
-ACCOUNT_TYPE_LOCKS = {
-    "fake": asyncio.Lock(),
-    "fraud": asyncio.Lock(),
-    "old_creation": asyncio.Lock(),
-}
+
 # قفل شراء الأرقام العادية لمنع البيع المكرر وقت الضغط المتزامن.
 NORMAL_BUY_LOCK = asyncio.Lock()
 
@@ -320,10 +325,13 @@ def get_type_total(account_type):
 
 def start_payment_system():
     """تشغيل نظام الدفع في thread منفصل مع إعادة التشغيل التلقائي"""
-    time.sleep(30)  # انتظر 30 ثانية قبل بدء نظام الدفع لتجنب تضارب قاعدة البيانات
+    time.sleep(10)  # انتظر 30 ثانية قبل بدء نظام الدفع لتجنب تضارب قاعدة البيانات
     while True:
         try:
             process = subprocess.Popen([sys.executable, "payment.py"])
+            if not os.path.exists("payment.py"):
+                print("❌ ملف payment.py غير موجود")
+                return
             process.wait()
             print(f"⚠️ توقف نظام الدفع بـ code: {process.returncode}")
 
@@ -601,7 +609,7 @@ async def show_referral_stats(event, user_id):
 
 
 async def change_referral_reward(event, user_id):
-    async with bot.conversation(event.chat_id, timeout=120) as x:
+    async with client.conversation(event.chat_id, timeout=120) as x:
         await x.send_message("**💰 أرسل قيمة مكافأة الإحالة الجديدة:**")
         val_msg = await x.get_response()
         try:
@@ -622,12 +630,10 @@ async def complete_verification_handler(event):
     await event.edit("**✅ تم التحقق بنجاح!**\n\n**أرسل /start لبدء استخدام البوت**")
 # ===== OTP FUNCTIONS =====
 
-
 async def cleanup_otp(user_id):
-
-
-    client_ = otp_clients.pop(user_id, None)
-    otp_data.pop(user_id, None)
+    async with otp_lock:
+        client_ = otp_clients.pop(user_id, None)
+        otp_data.pop(user_id, None)
 
     if client_:
         try:
@@ -651,8 +657,7 @@ async def verify_otp(user_id, code):
             phone_code_hash=data["hash"]
         )
 
-        raw_session = client_otp.session.save()
-        encrypted_session = cipher.encrypt(raw_session.encode()).decode()
+        encrypted_session = cipher.encrypt(client_otp.session.save().encode()).decode()
 
 
         phone = data["phone"]
@@ -672,8 +677,8 @@ async def verify_otp(user_id, code):
         storage_managers["normal"].add_account("normal", {
             "phone_number": data["phone"],
             "session": encrypted_session,
-            "country": "Unknown",
-            "calling_code": "",
+            "country": country,
+"calling_code": calling_code,
             "price": 10.0,
             "two_step": os.getenv("DEFAULT_TWO_STEP", "Visco")
         })
@@ -690,17 +695,18 @@ async def verify_otp(user_id, code):
         # --- استبدل الجزء أدناه بالكود الجديد ---
     except SessionPasswordNeededError:
         try:
-            otp_clients.pop(user_id, None)
-            otp_data.pop(user_id, None)
             session = client_otp.session.save()
+            encrypted_session = cipher.encrypt(session.encode()).decode()
+
             await client_otp.disconnect()
-            # محاولة الدخول بكلمة السر الافتراضية من ملف .env
+
             storage_managers["normal"].add_account("normal", {
                 "phone_number": data["phone"],
-                "session": session,
+                "session": encrypted_session,
                 "country": "Unknown",
                 "two_step": os.getenv("DEFAULT_TWO_STEP", "Visco")
             })
+
             return True
         except:
             return "2fa_required"
@@ -718,6 +724,7 @@ async def verify_otp(user_id, code):
 
 @client.on(events.NewMessage(func=lambda x: x.is_private and getattr(x, "text", "") and not x.text.startswith('/')))
 async def global_message_handler(event):
+
     user_id = event.chat_id
     text = event.text.strip()
     bad_guys = db.get("bad_guys") if db.exists("bad_guys") else []
@@ -765,7 +772,7 @@ async def start(event):
 
     # نظام التحقق (مستقل تمامًا)
     if not verification_system.is_user_verified(user_id):
-        async with bot.action(user_id, 'typing'):
+        async with client.action(user_id, 'typing'):
             await asyncio.sleep(1)
 
         question = verification_system.create_verification_session(user_id)
@@ -811,14 +818,14 @@ async def start(event):
 
             for admin_id in admins_list:
                 try:
-                    await bot.send_message(admin_id, message_text, parse_mode="html")
+                    await client.send_message(admin_id, message_text, parse_mode="html")
                 except Exception as e:
                     print(f"❌ خطأ في إرسال الرسالة للأدمن {admin_id}: {e}")
         except Exception as e:
             print(f"❌ خطأ في جلب معلومات المستخدم: {e}")
 
 
-    user_data = db.get(f"user_{user_id}")
+    user_data = db.get(f"user_{user_id}") or {}
     if "currency" not in user_data:
         user_data["currency"] = "SAR"
         db.set(f"user_{user_id}", user_data)
@@ -890,7 +897,7 @@ async def callback_handler(event):
         "enhanced_buy_system": enhanced_buy_system, "cb_answer": event.answer,
         "storage_manager": manager,
         "storage_managers": storage_managers,
-        "send_otp": send_otp, "verify_otp": verify_otp,
+         "verify_otp": verify_otp,
         "referral_system": referral_system, "discount_system": discount_system,
         "invoice_system": invoice_system,  # أضفناه لكي تعمل إحصائيات المبيعات في الأدمن
         "render_main_menu": render_main_menu,
@@ -941,10 +948,10 @@ if __name__ == "__main__":
 
         async def main():
             # تشغيل نظام الدفع في الخلفية
-            threading.Thread(target=start_payment_system, daemon=True).start()
+            asyncio.create_task(asyncio.to_thread(start_payment_system))
 
             # تشغيل البوت
-            await run_bot_system()
+            await run_client_system()
 
         asyncio.run(main())
 
