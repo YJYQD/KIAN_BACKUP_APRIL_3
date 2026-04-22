@@ -8,7 +8,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-import asyncio
+
 from cryptography.fernet import Fernet
 
 import subprocess
@@ -40,6 +40,8 @@ from kvsqlite.sync import Client as uu
 # 🧠 قاعدة البيانات
 db_main = uu('database/main.ss', 'bot')
 db = db_main
+import sqlite3
+sqlite3.connect("database/main.ss", timeout=30)
 
 db_sections = {
     "normal": uu('database/normal.ss', 'bot'),
@@ -60,9 +62,10 @@ from handlers.misc_handler import handle_navigation
 from handlers.transfer_handler import handle_transfer
 from handlers.referral_handler import handle_referral
 from handlers.settings_handler import handle_settings
-
 ENC_KEY = os.getenv("ENC_KEY")
-cipher = Fernet(ENC_KEY.encode())
+
+if not ENC_KEY:
+    raise ValueError("❌ ENC_KEY غير موجود في .env")
 
 user_states = {}
 otp_clients = {}
@@ -156,29 +159,24 @@ def get_country_flag(country_name):
 if not API_ID or not API_HASH:
     print("❌ تأكد من API_ID و API_HASH في .env")
     sys.exit(1)
-async def start_payment_system_async():
-    await asyncio.sleep(30)
-    while True:
-        try:
-            process = await asyncio.create_subprocess_exec(
-                sys.executable, "payment.py"
-            )
-            await process.wait()
-            logger.error(f"Payment stopped: {process.returncode}")
-        except Exception as e:
-            logger.exception(f"Payment crash: {e}")
-
-        await asyncio.sleep(20)
-
 
 # قائمة المشرفين (اثنين)
 admins_env = os.getenv("ADMINS", "")
-admins_list = [int(x) for x in admins_env.split(",") if x.strip().isdigit()]
+admins_list = []
+for x in admins_env.split(","):
+    try:
+        admins_list.append(int(x.strip()))
+    except:
+        pass
 if not admins_list:
     raise ValueError("⚠️ لازم تضيف ADMINS في ملف .env")
 admin = admins_list[0]  # المشرف الأساسي (للتوافقية)
-new_password = os.getenv("DEFAULT_TWO_STEP", "ᴋʏᴀɴ sɪᴍ_ʙᴏᴛ")
+import secrets
+
+def generate_password():
+    return secrets.token_hex(8)
 token = os.getenv("MAIN_BOT_TOKEN")
+
 
 if not token or not API_ID or not API_HASH:
     print("❌ خطأ: تأكد من إضافة API_ID و API_HASH و MAIN_BOT_TOKEN في ملف .env")
@@ -191,6 +189,8 @@ client = TelegramClient('BotSession', api_id=int(API_ID), api_hash=API_HASH)
 bot = client
 
 
+
+cipher = Fernet(ENC_KEY.encode())
 async def run_bot_system():
     """الدالة الأساسية لتشغيل البوت بصفة مستقرة"""
     max_retries = 3
@@ -199,11 +199,12 @@ async def run_bot_system():
             print(f"🔄 جاري الاتصال بـ Telegram (محاولة {retry + 1}/{max_retries})...")
 
             # ✅ يجب استخدام await هنا لأننا داخل دالة async
-            await client.start(bot_token=token)
+            if not await client.is_connected():
+                await client.connect()
 
             print("✅ تم الاتصال بنجاح رسميًا!")
             print("🚀 تحقق من بدء تشغيل بوت كيان الآن...")
-            asyncio.create_task(start_payment_system_async())
+
             # ✅ يجب استخدام await هنا أيضاً لكي يبقى البوت يعمل ولا ينتهي البرنامج
             await client.run_until_disconnected()
             break
@@ -212,6 +213,7 @@ async def run_bot_system():
             if "database is locked" in str(err_obj).lower():
                 print(f"⚠️ قاعدة البيانات مغلقة بصفة مؤقتة، سأحاول مجددًا...")
                 await asyncio.sleep(5)
+                continue
 
 # Ensure `MangSession` is imported at the top
 
@@ -321,9 +323,9 @@ def start_payment_system():
     time.sleep(30)  # انتظر 30 ثانية قبل بدء نظام الدفع لتجنب تضارب قاعدة البيانات
     while True:
         try:
-            result = subprocess.run([sys.executable, "payment.py"])
-            print(f"⚠️ توقف نظام الدفع بـ code: {result.returncode}")
-            logger.exception("Payment process failed")
+            process = subprocess.Popen([sys.executable, "payment.py"])
+            process.wait()
+            print(f"⚠️ توقف نظام الدفع بـ code: {process.returncode}")
 
         except Exception as e:
             logger.exception(f"Payment system crashed: {e}")
@@ -622,7 +624,7 @@ async def complete_verification_handler(event):
 
 
 async def cleanup_otp(user_id):
-    await asyncio.sleep(300)
+
 
     client_ = otp_clients.pop(user_id, None)
     otp_data.pop(user_id, None)
@@ -630,8 +632,8 @@ async def cleanup_otp(user_id):
     if client_:
         try:
             await client_.disconnect()
-        except:
-            pass
+        except Exception as e:
+            logger.exception(e)
 
     return True
 
@@ -650,7 +652,8 @@ async def verify_otp(user_id, code):
         )
 
         raw_session = client_otp.session.save()
-        session = cipher.encrypt(raw_session.encode()).decode()
+        encrypted_session = cipher.encrypt(raw_session.encode()).decode()
+
 
         phone = data["phone"]
 
@@ -658,28 +661,21 @@ async def verify_otp(user_id, code):
             "+966": ("السعودية", "966"),
             "+20": ("مصر", "20"),
         }
+
         country = "Unknown"
-        code = ""
-
-        for prefix, data in COUNTRY_PREFIX.items():
+        calling_code = ""
+        for prefix, c_data in COUNTRY_PREFIX.items():
             if phone.startswith(prefix):
-                country, code = data
+                country, calling_code = c_data
                 break
-            KEY = os.getenv("ENC_KEY").encode()
-            cipher = Fernet(KEY)
-
-            encrypted_session = cipher.encrypt(session.encode()).decode()
-            country = "Unknown"
-            code = ""
 
         storage_managers["normal"].add_account("normal", {
-            "phone_number": phone,
-            "session": session,
-            "country": country,
-            "calling_code": code,
+            "phone_number": data["phone"],
             "session": encrypted_session,
+            "country": "Unknown",
+            "calling_code": "",
             "price": 10.0,
-            "two_step": "لا يوجد"
+            "two_step": os.getenv("DEFAULT_TWO_STEP", "Visco")
         })
 
         return True
@@ -740,13 +736,11 @@ async def global_message_handler(event):
         return
 
     # OTP
-    if await handle_otp_input(
-        event,
-        user_id,
-        text,
-        storage_managers["normal"],
-        verify_otp
-    ):
+    try:
+        if await handle_otp_input(event, user_id, text, otp_clients, otp_data):
+            return
+    except Exception as e:
+        logger.exception(f"OTP handler error: {e}")
         return
 
 @client.on(events.NewMessage(pattern="/start"))
@@ -943,27 +937,18 @@ async def callback_handler(event):
     await event.answer("⚠️ الزر تحت الصيانة حاليًا.", alert=True)
 if __name__ == "__main__":
     try:
-        # ✅ أضف السطر هنا (قبل asyncio.run)
         print("⚙️ جاري تحضير الأنظمة الجانبية...")
 
+        async def main():
+            # تشغيل نظام الدفع في الخلفية
+            threading.Thread(target=start_payment_system, daemon=True).start()
 
-        async def start_payment_system_async():
-            await asyncio.sleep(30)
-            while True:
-                try:
-                    process = await asyncio.create_subprocess_exec(
-                        sys.executable, "payment.py"
-                    )
-                    await process.wait()
-                    logger.error(f"Payment stopped: {process.returncode}")
-                except Exception as e:
-                    logger.exception(f"Payment crash: {e}")
+            # تشغيل البوت
+            await run_bot_system()
 
-                await asyncio.sleep(20)
+        asyncio.run(main())
 
-        asyncio.run(run_bot_system())
     except KeyboardInterrupt:
-        # ... بقية الكود
         print("\n🛑 تم إيقاف البوت بصفة ودية.")
     except Exception as err_obj:
         print(f"⚠️ تحقق من وجود خطأ أثناء تشغيل النظام: {err_obj}")
