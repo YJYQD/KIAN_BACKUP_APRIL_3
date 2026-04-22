@@ -1,7 +1,7 @@
 from telethon import Button
 import asyncio
 
-
+transfer_lock = asyncio.Lock()
 async def handle_transfer(event, user_id, data, **ctx):
     db = ctx["db"]
     lang_manager = ctx["lang_manager"]
@@ -36,8 +36,8 @@ async def handle_transfer(event, user_id, data, **ctx):
                 if amount <= 0:
                     await conv.send_message("❌ يجب أن يكون المبلغ أكبر من صفر.")
                     return True
+                async with transfer_lock:
 
-                # الخطوة الثالثة: التحقق من الرصيد والعمولة (2%)
                 commission = amount * 0.02
                 total_required = amount + commission
 

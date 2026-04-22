@@ -8,13 +8,8 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# استخدمه فقط داخل except
-# مثال:
-try:
-    pass
-except Exception:
-    logger.exception("Full error")
+import asyncio
+from cryptography.fernet import Fernet
 
 import subprocess
 import sys
@@ -31,6 +26,14 @@ from telethon.errors.rpcerrorlist import MessageNotModifiedError
 
 from dotenv import load_dotenv
 load_dotenv()
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
+
+try:
+    API_ID = int(API_ID)
+except (ValueError, TypeError):
+    print("❌ API_ID لازم يكون رقم")
+    sys.exit(1)
 
 from kvsqlite.sync import Client as uu
 
@@ -58,12 +61,13 @@ from handlers.transfer_handler import handle_transfer
 from handlers.referral_handler import handle_referral
 from handlers.settings_handler import handle_settings
 
-
+ENC_KEY = os.getenv("ENC_KEY")
+cipher = Fernet(ENC_KEY.encode())
 
 user_states = {}
 otp_clients = {}
 otp_data = {}
-
+otp_lock = asyncio.Lock()
 
 # 🧱 أنظمة إضافية
 from language_manager import EnhancedLanguageManager
@@ -146,26 +150,32 @@ def get_country_flag(country_name):
     country_name = country_name.strip()
     return COUNTRY_FLAGS.get(country_name, '🌐')
 
-API_ID = os.getenv("API_ID")
-API_HASH = os.getenv("API_HASH")
+
 
 # Ensure `api_id` is explicitly converted to an integer
 if not API_ID or not API_HASH:
     print("❌ تأكد من API_ID و API_HASH في .env")
     sys.exit(1)
+async def start_payment_system_async():
+    await asyncio.sleep(30)
+    while True:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable, "payment.py"
+            )
+            await process.wait()
+            logger.error(f"Payment stopped: {process.returncode}")
+        except Exception as e:
+            logger.exception(f"Payment crash: {e}")
 
-try:
-    client = TelegramClient('BotSession', api_id=api_id, api_hash=API_HASH)
-except:
-    print("❌ API_ID لازم يكون رقم")
-    sys.exit(1)
+        await asyncio.sleep(20)
+
+
 # قائمة المشرفين (اثنين)
 admins_env = os.getenv("ADMINS", "")
 admins_list = [int(x) for x in admins_env.split(",") if x.strip().isdigit()]
 if not admins_list:
-    print("⚠️ تحذير: ADMINS غير مضبوط أو فارغ. يرجى ضبط متغير البيئة ADMINS في ملف .env.")
-    if not admins_list:
-        raise ValueError("ADMINS must be set in .env")  # قيمة افتراضية لتجنب الكسر
+    raise ValueError("⚠️ لازم تضيف ADMINS في ملف .env")
 admin = admins_list[0]  # المشرف الأساسي (للتوافقية)
 new_password = os.getenv("DEFAULT_TWO_STEP", "ᴋʏᴀɴ sɪᴍ_ʙᴏᴛ")
 token = os.getenv("MAIN_BOT_TOKEN")
@@ -193,17 +203,16 @@ async def run_bot_system():
 
             print("✅ تم الاتصال بنجاح رسميًا!")
             print("🚀 تحقق من بدء تشغيل بوت كيان الآن...")
-
+            asyncio.create_task(start_payment_system_async())
             # ✅ يجب استخدام await هنا أيضاً لكي يبقى البوت يعمل ولا ينتهي البرنامج
             await client.run_until_disconnected()
             break
         except Exception as err_obj:
+            logger.exception(f"Runtime error: {err_obj}")
             if "database is locked" in str(err_obj).lower():
                 print(f"⚠️ قاعدة البيانات مغلقة بصفة مؤقتة، سأحاول مجددًا...")
                 await asyncio.sleep(5)
-            else:
-                logger.exception("Runtime error")
-                await asyncio.sleep(5)
+
 # Ensure `MangSession` is imported at the top
 
 # Explicitly initialize `client` before its usage
@@ -246,7 +255,6 @@ ACCOUNT_TYPE_LOCKS = {
 }
 # قفل شراء الأرقام العادية لمنع البيع المكرر وقت الضغط المتزامن.
 NORMAL_BUY_LOCK = asyncio.Lock()
-
 
 def is_admin_user(user_id):
     admins = db.get("admins") if db.exists("admins") else []
@@ -313,9 +321,9 @@ def start_payment_system():
     time.sleep(30)  # انتظر 30 ثانية قبل بدء نظام الدفع لتجنب تضارب قاعدة البيانات
     while True:
         try:
-            result = subprocess.run(["python", "payment.py"])
+            result = subprocess.run([sys.executable, "payment.py"])
             print(f"⚠️ توقف نظام الدفع بـ code: {result.returncode}")
-            logger.exception("Force sub check failed")
+            logger.exception("Payment process failed")
 
         except Exception as e:
             logger.exception(f"Payment system crashed: {e}")
@@ -641,17 +649,26 @@ async def verify_otp(user_id, code):
             phone_code_hash=data["hash"]
         )
 
-        session = client_otp.session.save()
+        raw_session = client_otp.session.save()
+        session = cipher.encrypt(raw_session.encode()).decode()
 
         phone = data["phone"]
 
-        if phone.startswith("+966"):
-            country = "السعودية"
-            code = "966"
-        elif phone.startswith("+20"):
-            country = "مصر"
-            code = "20"
-        else:
+        COUNTRY_PREFIX = {
+            "+966": ("السعودية", "966"),
+            "+20": ("مصر", "20"),
+        }
+        country = "Unknown"
+        code = ""
+
+        for prefix, data in COUNTRY_PREFIX.items():
+            if phone.startswith(prefix):
+                country, code = data
+                break
+            KEY = os.getenv("ENC_KEY").encode()
+            cipher = Fernet(KEY)
+
+            encrypted_session = cipher.encrypt(session.encode()).decode()
             country = "Unknown"
             code = ""
 
@@ -660,6 +677,7 @@ async def verify_otp(user_id, code):
             "session": session,
             "country": country,
             "calling_code": code,
+            "session": encrypted_session,
             "price": 10.0,
             "two_step": "لا يوجد"
         })
@@ -860,7 +878,7 @@ async def callback_handler(event):
 
     # 🛑 إضافة هذا السطر لحل مشكلة "تحت الصيانة" في أزرار الشراء
     if data.startswith("enhanced_"):
-        await enhanced_buy_system.handle(event, u_id_val, data)
+        await enhanced_buy_system.handle_callback(event, data, u_id_val)
         return
 
     pk = f"purchase_{u_id_val}"
@@ -927,7 +945,21 @@ if __name__ == "__main__":
     try:
         # ✅ أضف السطر هنا (قبل asyncio.run)
         print("⚙️ جاري تحضير الأنظمة الجانبية...")
-        threading.Thread(target=start_payment_system, daemon=True).start()
+
+
+        async def start_payment_system_async():
+            await asyncio.sleep(30)
+            while True:
+                try:
+                    process = await asyncio.create_subprocess_exec(
+                        sys.executable, "payment.py"
+                    )
+                    await process.wait()
+                    logger.error(f"Payment stopped: {process.returncode}")
+                except Exception as e:
+                    logger.exception(f"Payment crash: {e}")
+
+                await asyncio.sleep(20)
 
         asyncio.run(run_bot_system())
     except KeyboardInterrupt:

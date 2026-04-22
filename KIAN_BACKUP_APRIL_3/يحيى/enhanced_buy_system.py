@@ -3,7 +3,7 @@ import random
 import os
 from telethon import Button, events
 from pyrogram import Client
-
+purchase_lock = asyncio.Lock()
 COUNTRY_FLAGS = {
     'مصر': '🇪🇬', 'السعودية': '🇸🇦', 'الامارات': '🇦🇪', 'الكويت': '🇰🇼',
     'البحرين': '🇧🇭', 'قطر': '🇶🇦', 'عمان': '🇴🇲', 'الاردن': '🇯🇴',

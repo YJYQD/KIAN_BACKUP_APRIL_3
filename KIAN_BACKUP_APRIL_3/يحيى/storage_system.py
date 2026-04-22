@@ -1,6 +1,6 @@
 import time
 import random
-
+storage_lock = asyncio.Lock()
 
 class StorageManager:
     def __init__(self, db):
