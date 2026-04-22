@@ -1,0 +1,27 @@
+# متطلبات مشروع ᴋʏᴀɴ sɪᴍ_ʙᴏᴛ
+
+# المكتبات الأساسية للبوت
+telethon==1.28.5
+pyrogram==2.0.106
+python-telegram-bot==20.7
+pyTelegramBotAPI==4.14.0
+
+# قاعدة البيانات
+kvsqlite==0.1.6
+
+# التشفير والأمان
+tgcrypto==1.2.5
+
+# الطلبات والاتصالات
+aiohttp==3.8.5
+requests==2.31.0
+
+# إدارة المتغيرات والبيئة
+python-dotenv==1.0.0
+
+# مكتبات إضافية
+asyncio
+datetime
+json
+pathlib
+
